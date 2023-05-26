@@ -332,7 +332,7 @@ impl OpenOptions {
     /// [`NotFound`]: io::ErrorKind::NotFound
     /// [`PermissionDenied`]: io::ErrorKind::PermissionDenied
     pub fn open(&self, path: &str) -> Result<File> {
-        let flags = libc::O_CLOEXEC | self.get_access_mode()? | self.get_creation_mode()?;
+        let flags = self.get_access_mode()? | self.get_creation_mode()?;
 
         debug!("open file {} with flags {}", path, flags);
         let b = unsafe {

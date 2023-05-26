@@ -151,8 +151,8 @@ impl From<hdfsFileInfo> for Metadata {
                     .expect("hdfs owner must be valid utf-8")
                     .into()
             },
-            last_mod: hfi.mLastMod,
-            last_access: hfi.mLastAccess,
+            last_mod: hfi.mLastMod as i64,
+            last_access: hfi.mLastAccess as i64,
         }
     }
 }
