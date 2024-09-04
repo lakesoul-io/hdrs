@@ -1,5 +1,6 @@
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::io;
+use std::io::Error;
 use std::mem::MaybeUninit;
 
 use errno::{set_errno, Errno};
@@ -169,7 +170,7 @@ impl ClientBuilder {
         };
 
         if fs.is_null() {
-            return Err(io::Error::last_os_error());
+            return Err(get_hdfs_io_error(None::<String>));
         }
 
         debug!("name node {} connected", self.name_node);
@@ -225,7 +226,7 @@ impl Client {
         };
 
         if n == -1 {
-            return Err(io::Error::last_os_error());
+            return Err(get_hdfs_io_error(Some(path)));
         }
 
         debug!("delete file {} finished", path);
@@ -257,7 +258,7 @@ impl Client {
         };
 
         if n == -1 {
-            return Err(io::Error::last_os_error());
+            return Err(get_hdfs_io_error(Some(old_path.to_owned() + "->" + new_path)));
         }
 
         debug!("rename file {} -> {} finished", old_path, new_path);
@@ -286,7 +287,7 @@ impl Client {
         };
 
         if n == -1 {
-            return Err(io::Error::last_os_error());
+            return Err(get_hdfs_io_error(Some(path)));
         }
 
         debug!("delete dir {} finished", path);
@@ -315,7 +316,7 @@ impl Client {
         };
 
         if n == -1 {
-            return Err(io::Error::last_os_error());
+            return Err(get_hdfs_io_error(Some(path)));
         }
 
         debug!("delete dir all {} finished", path);
@@ -362,7 +363,7 @@ impl Client {
         };
 
         if hfi.is_null() {
-            return Err(io::Error::last_os_error());
+            return Err(get_hdfs_io_error(Some(path)));
         }
 
         // Safety: hfi must be valid
@@ -402,7 +403,7 @@ impl Client {
         // - If errno == 0, there is no error, return empty vec directly.
         // - If errno != 0, return the last os error.
         if hfis.is_null() {
-            let e = io::Error::last_os_error();
+            let e = get_hdfs_io_error(Some(path));
 
             return match e.raw_os_error() {
                 None => Ok(Vec::new().into()),
@@ -447,11 +448,25 @@ impl Client {
         };
 
         if n == -1 {
-            return Err(io::Error::last_os_error());
+            return Err(get_hdfs_io_error(Some(path)));
         }
 
         Ok(())
     }
+}
+
+pub fn get_hdfs_io_error(path: Option<impl Into<String>>) -> Error {
+    let io_error = Error::last_os_error();
+    let errmsg = unsafe {
+        format!(
+            "HDFS IO failed at path {:?}: {:?}\nroot cause: {:?}\nstack trace: {:?}",
+            path.map(|s| s.into()),
+            io_error.kind(),
+            CStr::from_ptr(hdfsGetLastExceptionRootCause()),
+            CStr::from_ptr(hdfsGetLastExceptionStackTrace())
+        )
+    };
+    Error::new(io_error.kind(), errmsg)
 }
 
 #[cfg(test)]

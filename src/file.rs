@@ -1,11 +1,11 @@
 use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom, Write};
 use std::ptr;
-use std::ffi::CStr;
 use hdfs_sys::*;
 use libc::c_void;
 use log::debug;
 
 use crate::Client;
+use crate::client::get_hdfs_io_error;
 
 /// File will hold the underlying pointer to `hdfsFile`.
 ///
@@ -44,7 +44,7 @@ impl Drop for File {
             debug!("file has been closed");
             let ret = hdfsCloseFile(self.fs, self.f);
             if ret != 0 {
-                panic!("{:?}", self.get_hdfs_io_error())
+                panic!("{:?}", get_hdfs_io_error(Some(&self.path)))
             }
             // hdfsCloseFile will free self.f no matter success or failed.
             self.f = ptr::null_mut();
@@ -53,19 +53,6 @@ impl Drop for File {
 }
 
 impl File {
-    fn get_hdfs_io_error(&self) -> Error {
-        let io_error = Error::last_os_error();
-        let errmsg = unsafe {
-            format!(
-                "HDFS IO failed at path {:?}: {:?}\nroot cause: {:?}\nstack trace: {:?}",
-                self.path,
-                io_error.kind(),
-                CStr::from_ptr(hdfsGetLastExceptionRootCause()),
-                CStr::from_ptr(hdfsGetLastExceptionStackTrace())
-            )
-        };
-        Error::new(io_error.kind(), errmsg)
-    }
 
     pub(crate) fn new(fs: hdfsFS, f: hdfsFile, path: &str) -> Self {
         File {
@@ -80,7 +67,7 @@ impl File {
         let n = unsafe { hdfsSeek(self.fs, self.f, offset) };
 
         if n == -1 {
-            return Err(self.get_hdfs_io_error());
+            return Err(get_hdfs_io_error(Some(&self.path)));
         }
 
         Ok(())
@@ -90,7 +77,7 @@ impl File {
         let n = unsafe { hdfsTell(self.fs, self.f) };
 
         if n == -1 {
-            return Err(self.get_hdfs_io_error());
+            return Err(get_hdfs_io_error(Some(&self.path)));
         }
 
         Ok(n)
@@ -108,7 +95,7 @@ impl File {
         };
 
         if n == -1 {
-            return Err(self.get_hdfs_io_error());
+            return Err(get_hdfs_io_error(Some(&self.path)));
         }
 
         Ok(n as usize)
@@ -127,7 +114,7 @@ impl Read for File {
         };
 
         if n == -1 {
-            return Err(self.get_hdfs_io_error());
+            return Err(get_hdfs_io_error(Some(&self.path)));
         }
 
         Ok(n as usize)
@@ -169,7 +156,7 @@ impl Write for File {
         };
 
         if n == -1 {
-            return Err(self.get_hdfs_io_error());
+            return Err(get_hdfs_io_error(Some(&self.path)));
         }
 
         Ok(n as usize)
@@ -179,7 +166,7 @@ impl Write for File {
         let n = unsafe { hdfsFlush(self.fs, self.f) };
 
         if n == -1 {
-            return Err(self.get_hdfs_io_error());
+            return Err(get_hdfs_io_error(Some(&self.path)));
         }
 
         Ok(())
@@ -198,7 +185,7 @@ impl Read for &File {
         };
 
         if n == -1 {
-            return Err(self.get_hdfs_io_error());
+            return Err(get_hdfs_io_error(Some(&self.path)));
         }
 
         Ok(n as usize)
@@ -238,7 +225,7 @@ impl Write for &File {
         };
 
         if n == -1 {
-            return Err(self.get_hdfs_io_error());
+            return Err(get_hdfs_io_error(Some(&self.path)));
         }
 
         Ok(n as usize)
@@ -248,7 +235,7 @@ impl Write for &File {
         let n = unsafe { hdfsFlush(self.fs, self.f) };
 
         if n == -1 {
-            return Err(self.get_hdfs_io_error());
+            return Err(get_hdfs_io_error(Some(&self.path)));
         }
 
         Ok(())
