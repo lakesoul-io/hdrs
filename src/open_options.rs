@@ -3,7 +3,7 @@ use std::io::{Error, Result};
 
 use hdfs_sys::*;
 use log::debug;
-
+use crate::client::get_hdfs_io_error;
 use crate::File;
 
 /// Options and flags which can be used to configure how a file is opened.
@@ -342,7 +342,7 @@ impl OpenOptions {
         };
 
         if b.is_null() {
-            return Err(Error::last_os_error());
+            return Err(get_hdfs_io_error(Some(path)));
         }
 
         debug!("file {} with flags {} opened", path, flags);
