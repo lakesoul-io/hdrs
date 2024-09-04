@@ -1,14 +1,11 @@
 use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom, Write};
 use std::ptr;
-
+use std::ffi::CStr;
 use hdfs_sys::*;
 use libc::c_void;
 use log::debug;
 
 use crate::Client;
-
-// at most 2^30 bytes, ~1GB
-const FILE_LIMIT: usize = 1073741824;
 
 /// File will hold the underlying pointer to `hdfsFile`.
 ///
@@ -45,7 +42,10 @@ impl Drop for File {
     fn drop(&mut self) {
         unsafe {
             debug!("file has been closed");
-            let _ = hdfsCloseFile(self.fs, self.f);
+            let ret = hdfsCloseFile(self.fs, self.f);
+            if ret != 0 {
+                panic!("{:?}", self.get_hdfs_io_error())
+            }
             // hdfsCloseFile will free self.f no matter success or failed.
             self.f = ptr::null_mut();
         }
@@ -53,6 +53,20 @@ impl Drop for File {
 }
 
 impl File {
+    fn get_hdfs_io_error(&self) -> Error {
+        let io_error = Error::last_os_error();
+        let errmsg = unsafe {
+            format!(
+                "HDFS IO failed at path {:?}: {:?}\nroot cause: {:?}\nstack trace: {:?}",
+                self.path,
+                io_error.kind(),
+                CStr::from_ptr(hdfsGetLastExceptionRootCause()),
+                CStr::from_ptr(hdfsGetLastExceptionStackTrace())
+            )
+        };
+        Error::new(io_error.kind(), errmsg)
+    }
+
     pub(crate) fn new(fs: hdfsFS, f: hdfsFile, path: &str) -> Self {
         File {
             fs,
@@ -66,7 +80,7 @@ impl File {
         let n = unsafe { hdfsSeek(self.fs, self.f, offset) };
 
         if n == -1 {
-            return Err(Error::last_os_error());
+            return Err(self.get_hdfs_io_error());
         }
 
         Ok(())
@@ -76,7 +90,7 @@ impl File {
         let n = unsafe { hdfsTell(self.fs, self.f) };
 
         if n == -1 {
-            return Err(Error::last_os_error());
+            return Err(self.get_hdfs_io_error());
         }
 
         Ok(n)
@@ -89,12 +103,12 @@ impl File {
                 self.f,
                 offset as i64,
                 buf.as_ptr() as *mut c_void,
-                buf.len().min(FILE_LIMIT) as i32,
+                i32::try_from(buf.len()).unwrap(),
             )
         };
 
         if n == -1 {
-            return Err(Error::last_os_error());
+            return Err(self.get_hdfs_io_error());
         }
 
         Ok(n as usize)
@@ -108,12 +122,12 @@ impl Read for File {
                 self.fs,
                 self.f,
                 buf.as_ptr() as *mut c_void,
-                buf.len().min(FILE_LIMIT) as i32,
+                i32::try_from(buf.len()).unwrap(),
             )
         };
 
         if n == -1 {
-            return Err(Error::last_os_error());
+            return Err(self.get_hdfs_io_error());
         }
 
         Ok(n as usize)
@@ -150,12 +164,12 @@ impl Write for File {
                 self.fs,
                 self.f,
                 buf.as_ptr() as *const c_void,
-                buf.len().min(FILE_LIMIT) as i32,
+                i32::try_from(buf.len()).unwrap(),
             )
         };
 
         if n == -1 {
-            return Err(Error::last_os_error());
+            return Err(self.get_hdfs_io_error());
         }
 
         Ok(n as usize)
@@ -165,7 +179,7 @@ impl Write for File {
         let n = unsafe { hdfsFlush(self.fs, self.f) };
 
         if n == -1 {
-            return Err(Error::last_os_error());
+            return Err(self.get_hdfs_io_error());
         }
 
         Ok(())
@@ -179,12 +193,12 @@ impl Read for &File {
                 self.fs,
                 self.f,
                 buf.as_ptr() as *mut c_void,
-                buf.len().min(FILE_LIMIT) as i32,
+                i32::try_from(buf.len()).unwrap(),
             )
         };
 
         if n == -1 {
-            return Err(Error::last_os_error());
+            return Err(self.get_hdfs_io_error());
         }
 
         Ok(n as usize)
@@ -219,12 +233,12 @@ impl Write for &File {
                 self.fs,
                 self.f,
                 buf.as_ptr() as *const c_void,
-                buf.len().min(FILE_LIMIT) as i32,
+                i32::try_from(buf.len()).unwrap(),
             )
         };
 
         if n == -1 {
-            return Err(Error::last_os_error());
+            return Err(self.get_hdfs_io_error());
         }
 
         Ok(n as usize)
@@ -234,7 +248,7 @@ impl Write for &File {
         let n = unsafe { hdfsFlush(self.fs, self.f) };
 
         if n == -1 {
-            return Err(Error::last_os_error());
+            return Err(self.get_hdfs_io_error());
         }
 
         Ok(())
