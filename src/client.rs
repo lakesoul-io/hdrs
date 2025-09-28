@@ -458,12 +458,22 @@ impl Client {
 pub fn get_hdfs_io_error(path: Option<impl Into<String>>) -> Error {
     let io_error = Error::last_os_error();
     let errmsg = unsafe {
+        let root_cause = hdfsGetLastExceptionRootCause();
+        let stack_trace = hdfsGetLastExceptionStackTrace();
         format!(
             "HDFS IO failed at path {:?}: {:?}\nroot cause: {:?}\nstack trace: {:?}",
             path.map(|s| s.into()),
             io_error.kind(),
-            CStr::from_ptr(hdfsGetLastExceptionRootCause()),
-            CStr::from_ptr(hdfsGetLastExceptionStackTrace())
+            if root_cause.is_null() {
+                ""
+            } else {
+                CStr::from_ptr(root_cause).to_str().unwrap()
+            },
+            if stack_trace.is_null() {
+                ""
+            } else {
+                CStr::from_ptr(stack_trace).to_str().unwrap()
+            }
         )
     };
     Error::new(io_error.kind(), errmsg)
