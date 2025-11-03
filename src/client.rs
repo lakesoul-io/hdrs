@@ -147,7 +147,10 @@ impl ClientBuilder {
             let mut user = MaybeUninit::uninit();
             let mut ticket_cache_path = MaybeUninit::uninit();
 
-            unsafe { hdfsBuilderSetNameNode(builder, name_node.as_ptr()) };
+            unsafe {
+                hdfsBuilderSetForceNewInstance(builder);
+                hdfsBuilderSetNameNode(builder, name_node.as_ptr())
+            };
 
             if let Some(v) = self.user {
                 user.write(CString::new(v)?);
@@ -477,6 +480,14 @@ pub fn get_hdfs_io_error(path: Option<impl Into<String>>) -> Error {
         )
     };
     Error::new(io_error.kind(), errmsg)
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        unsafe {
+            hdfsDisconnect(self.fs);
+        }
+    }
 }
 
 #[cfg(test)]
