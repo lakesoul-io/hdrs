@@ -1,11 +1,12 @@
-use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom, Write};
-use std::ptr;
 use hdfs_sys::*;
 use libc::c_void;
 use log::debug;
+use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom, Write};
+use std::ptr;
+use std::sync::Arc;
 
+use crate::client::{get_hdfs_io_error, ClientCore};
 use crate::Client;
-use crate::client::get_hdfs_io_error;
 
 /// File will hold the underlying pointer to `hdfsFile`.
 ///
@@ -29,7 +30,7 @@ use crate::client::get_hdfs_io_error;
 /// ```
 #[derive(Debug)]
 pub struct File {
-    fs: hdfsFS,
+    core: Arc<ClientCore>,
     f: hdfsFile,
     path: String,
 }
@@ -42,7 +43,7 @@ impl Drop for File {
     fn drop(&mut self) {
         unsafe {
             debug!("file has been closed");
-            let ret = hdfsCloseFile(self.fs, self.f);
+            let ret = hdfsCloseFile(self.core.fs, self.f);
             if ret != 0 {
                 panic!("{:?}", get_hdfs_io_error(Some(&self.path)))
             }
@@ -53,10 +54,9 @@ impl Drop for File {
 }
 
 impl File {
-
-    pub(crate) fn new(fs: hdfsFS, f: hdfsFile, path: &str) -> Self {
+    pub(crate) fn new(core: Arc<ClientCore>, f: hdfsFile, path: &str) -> Self {
         File {
-            fs,
+            core,
             f,
             path: path.to_string(),
         }
@@ -64,7 +64,7 @@ impl File {
 
     /// Works only for files opened in read-only mode.
     fn inner_seek(&self, offset: i64) -> Result<()> {
-        let n = unsafe { hdfsSeek(self.fs, self.f, offset) };
+        let n = unsafe { hdfsSeek(self.core.fs, self.f, offset) };
 
         if n == -1 {
             return Err(get_hdfs_io_error(Some(&self.path)));
@@ -74,7 +74,7 @@ impl File {
     }
 
     fn tell(&self) -> Result<i64> {
-        let n = unsafe { hdfsTell(self.fs, self.f) };
+        let n = unsafe { hdfsTell(self.core.fs, self.f) };
 
         if n == -1 {
             return Err(get_hdfs_io_error(Some(&self.path)));
@@ -86,7 +86,7 @@ impl File {
     pub fn read_at(&self, buf: &mut [u8], offset: u64) -> Result<usize> {
         let n = unsafe {
             hdfsPread(
-                self.fs,
+                self.core.fs,
                 self.f,
                 offset as i64,
                 buf.as_ptr() as *mut c_void,
@@ -106,7 +106,7 @@ impl Read for File {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         let n = unsafe {
             hdfsRead(
-                self.fs,
+                self.core.fs,
                 self.f,
                 buf.as_ptr() as *mut c_void,
                 i32::try_from(buf.len()).unwrap(),
@@ -135,7 +135,10 @@ impl Seek for File {
                 Ok(offset)
             }
             SeekFrom::End(n) => {
-                let meta = Client::new(self.fs).metadata(&self.path)?;
+                let meta = Client {
+                    core: self.core.clone(),
+                }
+                .metadata(&self.path)?;
                 let offset = meta.len() as i64 + n;
                 self.inner_seek(offset)?;
                 Ok(offset as u64)
@@ -148,7 +151,7 @@ impl Write for File {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
         let n = unsafe {
             hdfsWrite(
-                self.fs,
+                self.core.fs,
                 self.f,
                 buf.as_ptr() as *const c_void,
                 i32::try_from(buf.len()).unwrap(),
@@ -163,7 +166,7 @@ impl Write for File {
     }
 
     fn flush(&mut self) -> Result<()> {
-        let n = unsafe { hdfsFlush(self.fs, self.f) };
+        let n = unsafe { hdfsFlush(self.core.fs, self.f) };
 
         if n == -1 {
             return Err(get_hdfs_io_error(Some(&self.path)));
@@ -177,7 +180,7 @@ impl Read for &File {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         let n = unsafe {
             hdfsRead(
-                self.fs,
+                self.core.fs,
                 self.f,
                 buf.as_ptr() as *mut c_void,
                 i32::try_from(buf.len()).unwrap(),
@@ -217,7 +220,7 @@ impl Write for &File {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
         let n = unsafe {
             hdfsWrite(
-                self.fs,
+                self.core.fs,
                 self.f,
                 buf.as_ptr() as *const c_void,
                 i32::try_from(buf.len()).unwrap(),
@@ -232,7 +235,7 @@ impl Write for &File {
     }
 
     fn flush(&mut self) -> Result<()> {
-        let n = unsafe { hdfsFlush(self.fs, self.f) };
+        let n = unsafe { hdfsFlush(self.core.fs, self.f) };
 
         if n == -1 {
             return Err(get_hdfs_io_error(Some(&self.path)));
@@ -265,7 +268,7 @@ mod tests {
             .expect("open file success");
 
         assert!(!f.f.is_null());
-        assert!(!f.fs.is_null());
+        assert!(!f.core.fs.is_null());
     }
 
     #[test]

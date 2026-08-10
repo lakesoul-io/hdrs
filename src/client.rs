@@ -2,6 +2,7 @@ use std::ffi::{CStr, CString};
 use std::io;
 use std::io::Error;
 use std::mem::MaybeUninit;
+use std::sync::Arc;
 
 use errno::{set_errno, Errno};
 use hdfs_sys::*;
@@ -10,20 +11,41 @@ use log::debug;
 use crate::metadata::Metadata;
 use crate::{OpenOptions, Readdir};
 
+/// Reference-counted core that owns the underlying `hdfsFS` handle.
+///
+/// `Drop` disconnects the filesystem. By sharing this core through `Arc`, every open
+/// [`File`](crate::File) keeps the filesystem alive until it has been closed itself, so we
+/// never call `hdfsDisconnect` while any file handle still references the connection —
+/// which is the root cause of `java.io.IOException: Filesystem closed`.
+#[derive(Debug)]
+pub(crate) struct ClientCore {
+    pub(crate) fs: hdfsFS,
+}
+
+unsafe impl Send for ClientCore {}
+unsafe impl Sync for ClientCore {}
+
+impl Drop for ClientCore {
+    fn drop(&mut self) {
+        unsafe {
+            hdfsDisconnect(self.fs);
+        }
+    }
+}
+
 /// Client holds the underlying connection to hdfs clusters.
 ///
-/// The connection will be disconnected while `Drop`, so their is no need to terminate it manually.
+/// The underlying `hdfsFS` is reference-counted via [`ClientCore`]: the filesystem is only
+/// disconnected once every `Client` clone **and** every open [`File`](crate::File) derived
+/// from it has been dropped, so file handles never outlive the connection.
 ///
 /// # Note
 ///
-/// Hadoop will have it's own filesystem logic which may return the same filesystem instance while
-/// `hdfsConnect`. If we call `hdfsDisconnect`, all clients that hold this filesystem instance will
-/// meet `java.io.IOException: Filesystem closed` during I/O operations.
-///
-/// So it's better for us to not call `hdfsDisconnect` manually.
-/// Aka, don't implement `Drop` to disconnect the connection.
-///
-/// Reference: [IOException: Filesystem closed exception when running oozie workflo](https://stackoverflow.com/questions/23779186/ioexception-filesystem-closed-exception-when-running-oozie-workflow)
+/// Hadoop's own filesystem logic may return the same filesystem instance for repeated
+/// `hdfsConnect` calls; calling `hdfsDisconnect` then breaks all clients still using that
+/// instance with `java.io.IOException: Filesystem closed`. We therefore always connect via
+/// `hdfsBuilderSetForceNewInstance` (independent instance) and only disconnect once all
+/// outstanding file handles are gone.
 ///
 /// # Examples
 ///
@@ -35,9 +57,9 @@ use crate::{OpenOptions, Readdir};
 ///     .with_kerberos_ticket_cache_path("/tmp/krb5_111")
 ///     .connect();
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Client {
-    fs: hdfsFS,
+    pub(crate) core: Arc<ClientCore>,
 }
 
 /// The builder of connecting to hdfs clusters.
@@ -187,7 +209,9 @@ unsafe impl Sync for Client {}
 
 impl Client {
     pub(crate) fn new(fs: hdfsFS) -> Self {
-        Self { fs }
+        Self {
+            core: Arc::new(ClientCore { fs }),
+        }
     }
 
     /// Open will create a stream builder for later IO operations.
@@ -204,7 +228,7 @@ impl Client {
     /// let open_options = fs.open_file();
     /// ```
     pub fn open_file(&self) -> OpenOptions {
-        OpenOptions::new(self.fs)
+        OpenOptions::new(self.core.clone())
     }
 
     /// Delete a file.
@@ -225,7 +249,7 @@ impl Client {
 
         let n = unsafe {
             let p = CString::new(path)?;
-            hdfsDelete(self.fs, p.as_ptr(), false.into())
+            hdfsDelete(self.core.fs, p.as_ptr(), false.into())
         };
 
         if n == -1 {
@@ -257,11 +281,13 @@ impl Client {
         let n = {
             let old_path = CString::new(old_path)?;
             let new_path = CString::new(new_path)?;
-            unsafe { hdfsRename(self.fs, old_path.as_ptr(), new_path.as_ptr()) }
+            unsafe { hdfsRename(self.core.fs, old_path.as_ptr(), new_path.as_ptr()) }
         };
 
         if n == -1 {
-            return Err(get_hdfs_io_error(Some(old_path.to_owned() + "->" + new_path)));
+            return Err(get_hdfs_io_error(Some(
+                old_path.to_owned() + "->" + new_path,
+            )));
         }
 
         debug!("rename file {} -> {} finished", old_path, new_path);
@@ -286,7 +312,7 @@ impl Client {
 
         let n = unsafe {
             let p = CString::new(path)?;
-            hdfsDelete(self.fs, p.as_ptr(), false.into())
+            hdfsDelete(self.core.fs, p.as_ptr(), false.into())
         };
 
         if n == -1 {
@@ -315,7 +341,7 @@ impl Client {
 
         let n = unsafe {
             let p = CString::new(path)?;
-            hdfsDelete(self.fs, p.as_ptr(), true.into())
+            hdfsDelete(self.core.fs, p.as_ptr(), true.into())
         };
 
         if n == -1 {
@@ -362,7 +388,7 @@ impl Client {
 
         let hfi = unsafe {
             let p = CString::new(path)?;
-            hdfsGetPathInfo(self.fs, p.as_ptr())
+            hdfsGetPathInfo(self.core.fs, p.as_ptr())
         };
 
         if hfi.is_null() {
@@ -397,7 +423,7 @@ impl Client {
         let mut entries = 0;
         let hfis = unsafe {
             let p = CString::new(path)?;
-            hdfsListDirectory(self.fs, p.as_ptr(), &mut entries)
+            hdfsListDirectory(self.core.fs, p.as_ptr(), &mut entries)
         };
 
         // hfis will be NULL on error or empty directory.
@@ -447,7 +473,7 @@ impl Client {
     pub fn create_dir(&self, path: &str) -> io::Result<()> {
         let n = unsafe {
             let p = CString::new(path)?;
-            hdfsCreateDirectory(self.fs, p.as_ptr())
+            hdfsCreateDirectory(self.core.fs, p.as_ptr())
         };
 
         if n == -1 {
@@ -482,14 +508,6 @@ pub fn get_hdfs_io_error(path: Option<impl Into<String>>) -> Error {
     Error::new(io_error.kind(), errmsg)
 }
 
-impl Drop for Client {
-    fn drop(&mut self) {
-        unsafe {
-            hdfsDisconnect(self.fs);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::io;
@@ -505,7 +523,7 @@ mod tests {
         let fs = ClientBuilder::new("default")
             .connect()
             .expect("init success");
-        assert!(!fs.fs.is_null())
+        assert!(!fs.core.fs.is_null())
     }
 
     #[test]

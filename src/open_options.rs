@@ -1,10 +1,12 @@
 use std::ffi::CString;
 use std::io::{Error, Result};
+use std::sync::Arc;
 
+use crate::client::get_hdfs_io_error;
+use crate::client::ClientCore;
+use crate::File;
 use hdfs_sys::*;
 use log::debug;
-use crate::client::get_hdfs_io_error;
-use crate::File;
 
 /// Options and flags which can be used to configure how a file is opened.
 ///
@@ -46,7 +48,7 @@ use crate::File;
 /// ```
 #[derive(Debug, Clone)]
 pub struct OpenOptions {
-    fs: hdfsFS,
+    core: Arc<ClientCore>,
 
     read: bool,
     write: bool,
@@ -61,9 +63,9 @@ unsafe impl Send for OpenOptions {}
 unsafe impl Sync for OpenOptions {}
 
 impl OpenOptions {
-    pub(crate) fn new(fs: hdfsFS) -> Self {
+    pub(crate) fn new(core: Arc<ClientCore>) -> Self {
         OpenOptions {
-            fs,
+            core,
 
             read: false,
             write: false,
@@ -338,7 +340,7 @@ impl OpenOptions {
         let b = unsafe {
             let p = CString::new(path)?;
             // TODO: we need to support buffer size, replication and block size.
-            hdfsOpenFile(self.fs, p.as_ptr(), flags, 0, 0, 0)
+            hdfsOpenFile(self.core.fs, p.as_ptr(), flags, 0, 0, 0)
         };
 
         if b.is_null() {
@@ -346,7 +348,7 @@ impl OpenOptions {
         }
 
         debug!("file {} with flags {} opened", path, flags);
-        Ok(File::new(self.fs, b, path))
+        Ok(File::new(self.core.clone(), b, path))
     }
 
     #[cfg(feature = "async_file")]
