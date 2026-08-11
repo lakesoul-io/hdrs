@@ -1,0 +1,28 @@
+{
+  "nodes": {
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1786201459,
+        "narHash": "sha256-CiOTEjmwAmG2AWnaIno9YaCJJmpca2FXPhMAsnrolCg=",
+        "ref": "nixos-26.05",
+        "rev": "8b8c811c7c2541c30382c5de7ed26be055569c60",
+        "shallow": true,
+        "type": "git",
+        "url": "https://mirrors.nju.edu.cn/git/nixpkgs.git"
+      },
+      "original": {
+        "ref": "nixos-26.05",
+        "shallow": true,
+        "type": "git",
+        "url": "https://mirrors.nju.edu.cn/git/nixpkgs.git"
+      }
+    },
+    "root": {
+      "inputs": {
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

@@ -199,6 +199,103 @@ fn test_file() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn test_open_options_and_file_keep_client_alive() -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    let _ = env_logger::try_init();
+    dotenv::from_filename(".env").ok();
+
+    if env::var("HDRS_TEST").unwrap_or_default() != "on" {
+        return Ok(());
+    }
+
+    let name_node = env::var("HDRS_NAMENODE")?;
+    let work_dir = env::var("HDRS_WORKDIR").unwrap_or_default();
+    let path = format!("{work_dir}{}", uuid::Uuid::new_v4());
+    let content = b"the filesystem must outlive its client";
+
+    let client = ClientBuilder::new(&name_node).connect()?;
+
+    {
+        let mut file = client.open_file().create(true).write(true).open(&path)?;
+        file.write_all(content)?;
+        file.flush()?;
+    }
+
+    let mut options = client.open_file();
+    options.read(true);
+    drop(client);
+
+    // OpenOptions owns the connection even after the last Client is dropped.
+    let mut file = options.open(&path)?;
+    drop(options);
+
+    // File is now the only connection owner. Seeking from the end internally performs
+    // a metadata request and must not disconnect the shared filesystem afterwards.
+    let tail_len = 6;
+    let position = file.seek(SeekFrom::End(-(tail_len as i64)))?;
+    assert_eq!(position, (content.len() - tail_len) as u64);
+
+    let mut tail = vec![0; tail_len];
+    file.read_exact(&mut tail)?;
+    assert_eq!(tail, content[content.len() - tail_len..]);
+
+    file.seek(SeekFrom::Start(0))?;
+    let mut actual = Vec::new();
+    file.read_to_end(&mut actual)?;
+    assert_eq!(actual, content);
+
+    // This must close the file before releasing and disconnecting the filesystem.
+    drop(file);
+
+    let cleanup_client = ClientBuilder::new(&name_node).connect()?;
+    cleanup_client.remove_file(&path)?;
+
+    Ok(())
+}
+
+#[cfg(feature = "async_file")]
+#[tokio::test]
+async fn test_async_file_keeps_client_alive() -> Result<()> {
+    use futures::{AsyncReadExt, AsyncWriteExt};
+
+    let _ = env_logger::try_init();
+    dotenv::from_filename(".env").ok();
+
+    if env::var("HDRS_TEST").unwrap_or_default() != "on" {
+        return Ok(());
+    }
+
+    let name_node = env::var("HDRS_NAMENODE")?;
+    let work_dir = env::var("HDRS_WORKDIR").unwrap_or_default();
+    let path = format!("{work_dir}{}", uuid::Uuid::new_v4());
+    let content = b"async files also own the filesystem";
+
+    let client = ClientBuilder::new(&name_node).connect()?;
+    {
+        let mut file = client.open_file().create(true).write(true).open(&path)?;
+        std::io::Write::write_all(&mut file, content)?;
+        std::io::Write::flush(&mut file)?;
+    }
+
+    let mut file = client.open_file().read(true).async_open(&path).await?;
+    drop(client);
+
+    // The blocking-pool File held by AsyncFile must keep the connection alive.
+    let mut actual = Vec::new();
+    file.read_to_end(&mut actual).await?;
+    assert_eq!(actual, content);
+
+    file.close().await?;
+    drop(file);
+
+    let cleanup_client = ClientBuilder::new(&name_node).connect()?;
+    cleanup_client.remove_file(&path)?;
+
+    Ok(())
+}
+
 #[cfg(feature = "futures-io")]
 #[tokio::test]
 async fn test_tokio_file() -> Result<()> {
